@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dice &amp; Realms</title>
+<style>
+body{margin:0;background:#14121c;color:#e8e4f0;font:15px system-ui,sans-serif}
+#app{max-width:640px;margin:0 auto;padding:10px}
+.hd{background:#221f30;padding:8px;border-radius:8px;line-height:1.6}
+.sc{position:relative;height:130px;margin:8px 0;background:linear-gradient(#2c2848,#1b3a2b);border-radius:8px;font-size:34px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;overflow:hidden}
+.lg{background:#0e0c14;padding:8px;border-radius:8px;min-height:90px;font-size:13px}
+.ac{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+button{background:#e0a84a;color:#222;border:0;border-radius:6px;padding:9px 12px;font-size:14px;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+.row{background:#221f30;margin:5px 0;padding:6px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+.hid{position:absolute;font-size:10px;opacity:.12;cursor:pointer}.hid.on{opacity:1;color:#ff0}
+.bar{height:4px;background:#d9534f}.bar i{display:block;height:4px;background:#5fbf7a}
+input{padding:8px;border-radius:6px;border:0;width:60%}
+</style></head><body><div id="app"></div>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+// ===== FIREBASE: вставь свои значения из Firebase Console. Пусто = сохранения только в браузере =====
+const FB={apiKey:"",authDomain:"",projectId:"",appId:""};
+
+const $=s=>document.querySelector(s),rnd=n=>Math.floor(Math.random()*n)+1,pick=a=>a[rnd(a.length)-1];
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const btn=(l,f,d)=>`<button ${d?'disabled':''} onclick="${f}">${l}</button>`;
+const CLS={
+ war:{n:'Воин',i:'⚔️',hp:34,mp:10,sp:'Мощный удар',sk:['Сила (+1 урон)','Живучесть (+8 HP)','Мастерство приёма (+2 к спец.)','Удача (+1 к проверкам)']},
+ mage:{n:'Маг',i:'🧙',hp:22,mp:24,sp:'Огненный шар',sk:['Сила воли (+1 урон)','Барьер (+8 HP)','Мощь заклинаний (+2 к спец.)','Предвидение (+1 к проверкам)']},
+ rog:{n:'Плут',i:'🗡️',hp:26,mp:14,sp:'Удар в спину',sk:['Точность (+1 урон)','Ловкость (+8 HP)','Смертельный укол (+2 к спец.)','Фарт (+1 к проверкам)']}};
+const RK=[['F',0],['E',60],['D',160],['C',350],['B',700],['A',1200],['S',2000]];
+const QS=[
+ {id:1,r:0,t:'k',n:6,pts:20,g:30,xp:25,txt:'Убить 6 врагов'},{id:2,r:0,t:'s',n:3,pts:20,g:30,xp:25,txt:'Пройти 3 этажа подземелья'},
+ {id:3,r:1,t:'k',n:15,pts:35,g:70,xp:60,txt:'Убить 15 врагов'},{id:4,r:1,t:'s',n:8,pts:35,g:70,xp:60,txt:'Пройти 8 этажей'},
+ {id:5,r:2,t:'k',n:30,pts:50,g:150,xp:140,txt:'Убить 30 врагов'},{id:6,r:3,t:'s',n:25,pts:80,g:300,xp:300,txt:'Пройти 25 этажей'},
+ {id:7,r:4,t:'k',n:60,pts:120,g:500,xp:600,txt:'Убить 60 врагов'},{id:8,r:5,t:'s',n:50,pts:200,g:900,xp:1200,txt:'Пройти 50 этажей'}];
+const POOL=[
+ {id:'potion',n:'💊 Зелье
