@@ -17,10 +17,10 @@ input{padding:8px;border-radius:6px;border:0;width:60%}
 </style></head><body><div id="app"></div>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script>
-// ===== FIREBASE: вставь свои значения из Firebase Console. Пусто = сохранения только в браузере =====
-const FB={apiKey:"",authDomain:"",projectId:"",appId:""};
+// ===== FIREBASE (Realtime Database): вставь свои значения. Пусто = сохранения только в браузере =====
+const FB={apiKey:"",authDomain:"",projectId:"",appId:"",databaseURL:""};
 
 const $=s=>document.querySelector(s),rnd=n=>Math.floor(Math.random()*n)+1,pick=a=>a[rnd(a.length)-1];
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -36,4 +36,138 @@ const QS=[
  {id:5,r:2,t:'k',n:30,pts:50,g:150,xp:140,txt:'Убить 30 врагов'},{id:6,r:3,t:'s',n:25,pts:80,g:300,xp:300,txt:'Пройти 25 этажей'},
  {id:7,r:4,t:'k',n:60,pts:120,g:500,xp:600,txt:'Убить 60 врагов'},{id:8,r:5,t:'s',n:50,pts:200,g:900,xp:1200,txt:'Пройти 50 этажей'}];
 const POOL=[
- {id:'potion',n:'💊 Зелье
+ {id:'potion',n:'💊 Зелье лечения',p:15,t:'u'},{id:'ether',n:'🔷 Эфир',p:20,t:'u'},
+ {id:'leather',n:'🥋 Кожаная броня (+1)',p:60,t:'a',b:1},{id:'chain',n:'🛡️ Кольчуга (+2)',p:150,t:'a',b:2},{id:'plate',n:'🏰 Латы (+4)',p:450,t:'a',b:4},
+ {id:'blade',n:'🗡️ Клинок (+2)',p:90,t:'w',b:2},{id:'steel',n:'⚔️ Сталь (+4)',p:260,t:'w',b:4}];
+const NPC=[{n:'Пьяница',dc:8,g:[5,15]},{n:'Торговец Борин',dc:13,g:[15,40]},{n:'Стражник',dc:17,g:[40,90]},{n:'Лорд',dc:19,g:[100,200]}];
+const EN=[0,[['🐀','Крыса'],['👺','Гоблин'],['🐺','Волк']],[['🧟','Зомби'],['🦂','Скорпион'],['🐗','Вепрь']],[['🧛','Вампир'],['🗿','Голем'],['🐲','Дракончик']],[['👹','Огр-босс'],['💀','Лич-босс']]];
+const NARR=['Эхо шагов теряется во тьме.','Пахнет сыростью и старой магией.','Где-то капает вода.','Стены покрыты странными рунами.'];
+let P=null,B=null,msgs=[],db=null,uid=null,tmr=null;
+
+// ===== сохранение =====
+function fix(r){if(r.mode=='battle')r.mode='town';return r}
+function save(){if(!P)return;P.t=Date.now();try{localStorage.setItem('dr_save',JSON.stringify(P))}catch(e){}
+ if(db&&uid){clearTimeout(tmr);tmr=setTimeout(()=>db.ref('saves/'+uid).set({d:JSON.stringify(P),t:P.t}).catch(console.error),2000)}}
+function cloudInit(){try{if(!FB.apiKey||!window.firebase)return;firebase.initializeApp(FB);db=firebase.database();
+ firebase.auth().signInAnonymously().then(c=>{uid=c.user.uid;return db.ref('saves/'+uid).get()})
+ .then(d=>{if(d&&d.exists()){const r=JSON.parse(d.val().d);if(!P||r.t>P.t){P=fix(r);render()}}})
+ .catch(e=>{say('Облако недоступно: '+e.message);render()})}catch(e){console.error(e)}}
+
+// ===== расчёты =====
+const C=()=>CLS[P.cls],luck=()=>P.sk[3],tl=()=>1+Math.floor(P.done/3);
+const maxHp=()=>C().hp+(P.lvl-1)*5+P.sk[1]*8,maxMp=()=>C().mp+P.lvl*2;
+const pAtk=()=>Math.floor(P.lvl/2)+P.weapon,pDmg=()=>rnd(6)+P.sk[0]+P.weapon+Math.floor(P.lvl/3)+(P.cls=='war'?2:0);
+const need=()=>P.lvl*40,mult=()=>P.rep<0?Math.min(2,1-P.rep/100):1-Math.min(.15,P.rep/400);
+const rank=()=>{let r=0;RK.forEach((x,i)=>{if(P.pts>=x[1])r=i});return r};
+function say(t){msgs.push(t);if(msgs.length>8)msgs.shift()}
+function addXp(n){if(n<=0)return;P.xp+=n;while(P.xp>=need()){P.xp-=need();P.lvl++;P.sp++;P.hp=maxHp();P.mp=maxMp();say(`🎉 Уровень ${P.lvl}! +1 очко навыка`)}}
+// d20-проверка с «жалостью»: после каждого провала шансы успешных граней растут, при успехе сбрасываются
+function chk(dc){P.pity=P.pity||{};let w=P.pity[20];if(!w||w.length!=20)w=P.pity[20]=Array(20).fill(1);
+ const okf=n=>n==20||(n!=1&&n+luck()>=dc);
+ let r=Math.random()*w.reduce((a,b)=>a+b,0),v=20;for(let i=0;i<20;i++){r-=w[i];if(r<0){v=i+1;break}}
+ const ok=okf(v);if(ok)w.fill(1);else for(let i=0;i<20;i++)if(okf(i+1))w[i]=Math.min(5,w[i]*1.2);
+ return{v,ok}}
+
+// ===== старт =====
+function startGame(cls){const n=($('#nm')&&$('#nm').value.trim())||'Герой';const c=CLS[cls];
+ P={name:n.slice(0,20),cls,lvl:1,xp:0,sp:0,hp:c.hp,mp:c.mp,gold:50,rep:0,pts:0,inv:{potion:2},sk:[0,0,0,0],weapon:0,armor:0,
+ stage:1,maxStage:1,kills:0,done:0,q:null,shop:{t:0,stock:{}},mode:'town',pity:{},found:false,reveal:false,hx:rnd(90),hy:rnd(80)};
+ msgs=[];say('Добро пожаловать в мир мечей и магии!');render()}
+function go(m){if(['town','dng'].includes(P.mode))P.prev=P.mode;P.mode=m;render()}
+function arrive(d){if(d=='town'){P.found=false;P.reveal=false;P.hx=rnd(90);P.hy=rnd(80)}P.mode=d;render()}
+function travel(d){const v=rnd(20);say(`🛤️ В пути… d20: ${v}`);
+ if(v<=3){startBattle(1,d,0);return}
+ if(v==4){const g=10+rnd(30);P.gold+=g;say(`Нашли на дороге ${g} 🪙`)}
+ if(v==5){P.inv.potion=(P.inv.potion||0)+1;say('Бродячий торговец подарил зелье 💊')}
+ if(d=='dng')say(pick(NARR));arrive(d)}
+
+// ===== подземелье =====
+function advance(){if(P.stage>=100)say('🏆 Вы прошли все 100 этажей!');else P.stage++;P.maxStage=Math.max(P.maxStage,P.stage)}
+function explore(){const v=rnd(20);say(`🎲 Этаж ${P.stage}, d20: ${v}`);
+ if(v==1){startBattle(4,'dng',1);return}
+ if(v<=4){startBattle(3,'dng',1);return}
+ if(v<=9){startBattle(2,'dng',1);return}
+ if(v<=13){startBattle(1,'dng',1);return}
+ if(v<=15){const r=chk(11+Math.floor(P.stage/5));if(r.ok)say(`Ловушка обезврежена (${r.v})`);else{const d=rnd(6)+P.stage;P.hp-=d;say(`💥 Ловушка! −${d} HP (${r.v})`);if(P.hp<=0){defeat();return}}}
+ else if(v==16){P.inv.potion=(P.inv.potion||0)+1;say('Странник отдал вам зелье 💊')}
+ else if(v<=18){const h=Math.ceil(maxHp()*.3);P.hp=Math.min(maxHp(),P.hp+h);say(`🏕️ Привал: +${h} HP`)}
+ else if(v==19){const g=10+P.stage*3;P.gold+=g;say(`💰 Найдено ${g} 🪙`)}
+ else{const g=40+P.stage*8;P.gold+=g;P.inv.potion=(P.inv.potion||0)+2;addXp(20+P.stage*2);say(`👑 СОКРОВИЩНИЦА! ${g} 🪙 и 2 зелья`)}
+ advance();render()}
+
+// ===== бой =====
+function startBattle(t,after,adv){const s=P.stage,cnt=[0,3,6,9,1][t],en=[];
+ for(let i=0;i<cnt;i++){const e=pick(EN[t]),hp=t==4?Math.round(60*(1+s*.2)):Math.round((5+4*t)*(1+s*.2));
+  en.push({i:e[0],n:e[1],hp,mx:hp,t,ac:8+2*t+Math.floor(s/10),d:2+t+Math.floor(s/4),xp:Math.round(4*t*(1+s*.1)),g:Math.round(3*t*(1+s*.1))})}
+ B={en,after,adv};P.mode='battle';say(`⚔️ Бой! Врагов: ${cnt}`);render()}
+function act(a){if(!B)return;const al=B.en.filter(e=>e.hp>0);if(!al.length)return;const e=al[0];
+ if(a=='atk'){const r=chk(e.ac-pAtk());if(r.ok){let d=pDmg();if(r.v==20)d*=2;e.hp-=d;say(`Удар по ${e.n}: ${d} (d20=${r.v}${r.v==20?', крит!':''})`)}else say(`Промах по ${e.n} (d20=${r.v})`)}
+ else if(a=='sp'){if(P.mp<4)return;P.mp-=4;const b=P.sk[2]*2;
+  if(P.cls=='mage'){al.slice(0,3).forEach(x=>{const d=rnd(6)+P.lvl+2+b;x.hp-=d});say(`🔥 Огненный шар по ${Math.min(3,al.length)} целям!`)}
+  else{const d=P.cls=='war'?rnd(8)+P.lvl+3+P.weapon+b:rnd(6)+P.lvl+5+P.weapon+b;e.hp-=d;say(`✨ ${C().sp}: ${d} урона`)}}
+ else if(a=='pot'){if(!P.inv.potion)return;P.inv.potion--;P.hp=Math.min(maxHp(),P.hp+25);say('💊 +25 HP')}
+ else if(a=='eth'){if(!P.inv.ether)return;P.inv.ether--;P.mp=Math.min(maxMp(),P.mp+10);say('🔷 +10 ОМ')}
+ else if(a=='run'){const r=chk(10);if(r.ok){say(`🏃 Сбежали (${r.v})`);const af=B.after;B=null;arrive(af);return}say(`Не удалось сбежать (${r.v})`)}
+ const dead=B.en.filter(x=>x.hp<=0&&!x.c);dead.forEach(x=>{x.c=1;P.kills++;P.gold+=x.g;addXp(x.xp);if(rnd(5)==1){P.inv.potion=(P.inv.potion||0)+1}});
+ if(!B.en.some(x=>x.hp>0)){say('🏆 Победа!');const af=B.after,adv=B.adv;B=null;if(adv)advance();arrive(af);return}
+ B.en.filter(x=>x.hp>0).slice(0,2).forEach(x=>{if(P.hp<=0)return;const h=rnd(20)+1+x.t;if(h!=2&&h>=10+P.armor){const d=rnd(x.d);P.hp-=d;say(`${x.i} ${x.n} бьёт: −${d} HP`)}else say(`${x.i} ${x.n} промахивается`)});
+ if(P.hp<=0)defeat();else render()}
+function defeat(){P.gold=Math.floor(P.gold/2);P.hp=maxHp();P.mp=maxMp();B=null;say('💀 Вы пали и очнулись в городе. Потеряна половина золота.');arrive('town')}
+
+// ===== рынок =====
+function restock(){const s=P.shop;if(Date.now()-s.t<180000&&s.t)return;s.t=Date.now();s.stock={};
+ POOL.forEach(i=>{s.stock[i.id]=i.t=='u'?Math.max(0,rnd(5)-1):Math.max(0,rnd(3)-2)})}
+function buy(id){const i=POOL.find(x=>x.id==id),p=Math.ceil(i.p*mult());if(!P.shop.stock[id]||P.gold<p)return;
+ if(i.t=='a'&&i.b<=P.armor){say('У вас уже есть лучше');render();return}
+ if(i.t=='w'&&i.b<=P.weapon){say('У вас уже есть лучше');render();return}
+ P.gold-=p;P.shop.stock[id]--;
+ if(i.t=='u')P.inv[id]=(P.inv[id]||0)+1;else if(i.t=='a')P.armor=i.b;else P.weapon=i.b;say(`Куплено: ${i.n}`);render()}
+function steal(i){const n=NPC[i],r=chk(n.dc),loot=()=>n.g[0]+rnd(n.g[1]-n.g[0]+1);
+ if(r.v==20){const g=loot()*3;P.gold+=g;say(`🥷 Идеальная кража (20)! +${g} 🪙`)}
+ else if(r.v==1){jail()}
+ else if(r.ok){const g=loot();P.gold+=g;say(`🥷 Украдено ${g} 🪙 у «${n.n}» (${r.v})`)}
+ else{P.rep=Math.max(-100,P.rep-8);say(`Вас заметили (${r.v})! Репутация −8`);if(P.rep<-50&&rnd(3)==1)jail()}
+ render()}
+function jail(){const l=Math.floor(P.gold*.3);P.gold-=l;P.rep=Math.max(-100,P.rep-5);P.mode='town';say(`⛓️ ТЮРЬМА! Штраф ${l} 🪙. Репутация −5`)}
+function findHid(){if(P.found)return;P.found=true;const g=15+rnd(30);P.gold+=g;addXp(10);say(`✦ Вы заметили тайник! +${g} 🪙, +10 опыта`);render()}
+function look(){const r=chk(13);if(r.ok){P.reveal=true;say(`🔍 Что-то блестит на площади! (${r.v})`)}else say(`🔍 Ничего необычного (${r.v})`);render()}
+function inn(){if(P.gold<10){say('Не хватает золота');render();return}P.gold-=10;P.hp=maxHp();P.mp=maxMp();say('🛏️ Вы отдохнули');render()}
+function smith(){const c=40*(P.weapon+1);if(P.weapon>=10||P.gold<c)return;P.gold-=c;P.weapon++;say(`🔨 Оружие улучшено до +${P.weapon}`);render()}
+function skill(i){if(P.sp<1||P.sk[i]>=5)return;P.sp--;P.sk[i]++;if(i==1)P.hp=Math.min(P.hp+8,maxHp());render()}
+
+// ===== гильдия =====
+const prog=q=>q.t=='k'?P.kills-P.q.k0:P.maxStage-P.q.s0;
+function take(id){if(P.q)return;const q=QS.find(x=>x.id==id);if(q.r>rank())return;P.q={id,k0:P.kills,s0:P.maxStage};say(`📜 Взято: ${q.txt}`);render()}
+function claim(){if(!P.q)return;const q=QS.find(x=>x.id==P.q.id);if(prog(q)<q.n)return;const full=rank()==q.r;
+ const g=full?q.g:Math.ceil(q.g/2);P.gold+=g;if(full){P.pts+=q.pts;addXp(q.xp)}P.rep=Math.min(100,P.rep+3);P.done++;P.q=null;
+ say(full?`✅ Задание выполнено: +${q.pts} очк., ${g}🪙, ${q.xp} опыта`:`✅ Задание низкого ранга: только ${g}🪙`);
+ if(P.done%3==0)say(`🏙️ Город вырос! Уровень города: ${tl()}`);render()}
+function drop(){if(!P.q)return;const q=QS.find(x=>x.id==P.q.id);P.pts=Math.max(0,P.pts-Math.ceil(q.pts/2));P.rep=Math.max(-100,P.rep-2);P.q=null;say('❌ Задание провалено, очки сняты');render()}
+
+// ===== отрисовка =====
+function createView(){return `<h2>🎲 Dice &amp; Realms</h2><p>Имя героя:</p><input id="nm" maxlength="20" placeholder="Герой"><p>Выбери класс:</p><div class="ac">${Object.keys(CLS).map(k=>btn(CLS[k].i+' '+CLS[k].n,`startGame('${k}')`)).join('')}</div>`}
+function guildView(){const r=rank();let h=`<h3>Гильдия — ранг ${RK[r][0]}, очки ${P.pts}${r<6?' / '+RK[r+1][1]:''}</h3>`;
+ if(P.q){const q=QS.find(x=>x.id==P.q.id),pr=Math.min(prog(q),q.n);h+=`<div class=row><span>📜 ${q.txt} (${pr}/${q.n})</span><span>${btn('Сдать','claim()',pr<q.n)} ${btn('Отказаться','drop()')}</span></div>`}
+ QS.forEach(q=>{h+=`<div class=row><span>[${RK[q.r][0]}] ${q.txt}<br><small>+${q.pts} очк · ${q.g}🪙 · ${q.xp} опыта</small></span>${btn('Взять',`take(${q.id})`,!!P.q||q.r>r)}</div>`});return h}
+function marketView(){restock();let h=`<h3>Рынок <small>(обновление через <span id="tm"></span>; цены ×${mult().toFixed(2)})</small></h3>`;
+ POOL.forEach(i=>{const q=P.shop.stock[i.id]||0,p=Math.ceil(i.p*mult());h+=`<div class=row><span>${i.n}<br><small>${p}🪙 · в наличии: ${q}</small></span>${btn('Купить',`buy('${i.id}')`,!q||P.gold<p)}</div>`});return h}
+function render(){const A=$('#app');if(!P){A.innerHTML=createView();return}
+ const c=C(),m=P.mode;let sc='',body='',ac='';
+ if(m=='battle'&&B){sc=B.en.map(e=>e.hp>0?`<div style="font-size:${e.t==4?60:30}px;text-align:center;width:${e.t==4?90:50}px">${e.i}<div class=bar><i style="width:${Math.max(0,e.hp/e.mx*100)}%"></i></div></div>`:'').join('');
+  const po=P.inv.potion||0,et=P.inv.ether||0;
+  ac=btn('⚔️ Атака',"act('atk')")+btn(`✨ ${c.sp} (4 ОМ)`,"act('sp')",P.mp<4)+btn(`💊 (${po})`,"act('pot')",!po)+btn(`🔷 (${et})`,"act('eth')",!et)+btn('🏃 Бежать',"act('run')")}
+ else if(m=='dng'){sc=`🕳️ <span style="font-size:18px">Этаж ${P.stage}/100</span>`;ac=btn('🎲 Исследовать этаж','explore()')+btn('🏰 В город',"travel('town')")+btn('⭐ Навыки',"go('skills')")}
+ else{sc='🏰⛲🏠🧙'+(P.found||m!='town'?'':`<span class="hid ${P.reveal?'on':''}" style="left:${P.hx}%;top:${P.hy}%" onclick="findHid()">✦</span>`);
+  if(m=='town'){ac=btn('🛒 Рынок',"go('market')")+btn('📜 Гильдия',"go('guild')")+btn('🛏️ Трактир (10🪙)','inn()')+(tl()>=3?btn(`🔨 Кузница (${40*(P.weapon+1)}🪙)`,'smith()',P.weapon>=10||P.gold<40*(P.weapon+1)):'')+btn('⭐ Навыки',"go('skills')")+btn('🥷 Своровать',"go('steal')")+btn('🔍 Осмотреться','look()')+btn('🕳️ В подземелье',"travel('dng')")+btn('🗑️ Сброс','resetGame()')}
+  else{if(m=='market')body=marketView();else if(m=='guild')body=guildView();
+   else if(m=='steal')body='<h3>Кого обокрасть?</h3>'+NPC.map((n,i)=>`<div class=row><span>${n.n} <small>(сложность ${n.dc})</small></span>${btn('Рискнуть',`steal(${i})`)}</div>`).join('');
+   else if(m=='skills')body=`<h3>Навыки (очков: ${P.sp})</h3>`+c.sk.map((s,i)=>`<div class=row><span>${s} — ур. ${P.sk[i]}/5</span>${btn('+',`skill(${i})`,P.sp<1||P.sk[i]>=5)}</div>`).join('');
+   ac=btn('⬅️ Назад',`go('${P.prev||'town'}')`)}}
+ A.innerHTML=`<div class=hd>${c.i} <b>${esc(P.name)}</b> (${c.n}) ур.${P.lvl} · ✨${P.xp}/${need()} · ⭐${P.sp}<br>❤️ ${P.hp}/${maxHp()} · 🔷 ${P.mp}/${maxMp()} · 🪙 ${P.gold} · 🏅 реп ${P.rep} · ранг ${RK[rank()][0]} · 🏙️ ${tl()} · 🛡️${P.armor} 🗡️${P.weapon}</div><div class=sc>${sc}</div>${body}<div class=lg>${msgs.map(esc).join('<br>')}</div><div class=ac>${ac}</div>`;
+ save()}
+function resetGame(){if(confirm('Удалить сохранение?')){try{localStorage.removeItem('dr_save')}catch(e){}P=null;B=null;msgs=[];render()}}
+setInterval(()=>{if(!P||P.mode!='market')return;const s=P.shop,left=Math.ceil((180000-(Date.now()-s.t))/1000);if(left<=0){render();return}const e=$('#tm');if(e)e.textContent=left+' с'},1000);
+
+try{const s=localStorage.getItem('dr_save');if(s)P=fix(JSON.parse(s))}catch(e){}
+render();cloudInit();
+</script></body></html>
